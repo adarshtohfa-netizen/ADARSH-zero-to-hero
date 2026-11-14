@@ -1,0 +1,132 @@
+## Ansible Management of EC2 Instances
+
+<img src="https://github.com/bhuvan-raj/Ansible-Zero-to-Hero/blob/main/assets/ec2.png" alt="Banner" />
+
+
+### 1\. The Core Principle: Agentless Architecture
+
+Ansible's ability to manage EC2 instances relies on its **agentless** architecture. Unlike systems like Chef or Puppet, Ansible doesn't require special software to be installed on the managed node. It connects using the same method a human administrator would: **SSH** (Secure Shell).
+
+For EC2 instances, this SSH connection requires three critical pieces of information, all of which are defined using special Ansible variables in the inventory file:
+
+1.  **Where to Connect (IP/DNS):** `ansible_host`
+2.  **Who to Connect As (Username):** `ansible_user`
+3.  **How to Authenticate (Key):** `ansible_ssh_private_key_file`
+
+### 2\. The Static Inventory File (INI Format)
+
+The **Inventory** is the source of truth for all hosts Ansible manages. The standard INI format is excellent for static environments like a small set of EC2 instances.
+
+#### A. Host and Group Definitions
+
+| Section | Purpose | Example |
+| :--- | :--- | :--- |
+| **`[group_name]`** | Defines a group of hosts (e.g., all web servers, all database servers). Playbooks target these groups. | `[webservers]` |
+| **Host Entry** | Lists the hostname or alias followed by connection parameters. | `ec2-web-01 ansible_host=54.123.45.67 ansible_user=ec2-user` |
+
+#### B. Connection Variables (Host-Specific)
+
+These variables are defined inline with the host if they differ between instances:
+
+| Variable | Usage | EC2 Context |
+| :--- | :--- | :--- |
+| **`ansible_host`** | The most crucial variable. It tells Ansible the network address to connect to. | **Your Public IP address.** |
+| **`ansible_user`** | The username on the remote machine. | Varies by AMI: **`ec2-user`** (Amazon Linux, RHEL), **`ubuntu`** (Ubuntu), or **`centos`** (CentOS). This *must* match the AMI's default user. |
+| **`ansible_port`** | The port for SSH (defaults to 22). | Rarely needed for EC2 unless you have customized SSH configurations. |
+
+#### C. Global Variables (`[all:vars]`)
+
+This special group is used to apply variables to **every host** in the inventory. It's the cleanest place to define the SSH key path, as EC2 instances usually share the same key pair.
+
+| Variable | Usage | EC2 Context |
+| :--- | :--- | :--- |
+| **`ansible_ssh_private_key_file`** | Specifies the full file path to your `.pem` key. | **Best practice** is to define this here to keep host entries clean. |
+
+-----
+
+### 3\. Connection and Security Requirements
+
+For Ansible to successfully connect to your EC2 nodes, these non-Ansible requirements must be met:
+
+| Requirement | Importance | Configuration Detail |
+| :--- | :--- | :--- |
+| **SSH Key Permissions** | **High.** SSH will refuse to use a key that is publicly readable. | On your control node: `chmod 400 /path/to/key.pem` |
+| **EC2 Security Group** | **Critical.** Connection will time out without this. | The instance's Security Group must have an **Inbound Rule** allowing TCP port **22 (SSH)** traffic **from the Public IP of your Ansible Control Node.** |
+| **Public IP Address** | **Required** for connecting over the internet. | The instance must have a Public IP or be assigned an Elastic IP. If connecting from a private network (like a VPN), you would use the `ansible_host` private IP. |
+| **Python on Managed Nodes** | **Mandatory.** Ansible modules require a Python interpreter. | All modern Amazon/Ubuntu/RHEL AMIs come with Python pre-installed, fulfilling this requirement. |
+
+-----
+
+### 4\. Testing and Verification
+
+The ad-hoc command using the built-in `ping` module is the standard way to verify connectivity before running a complex playbook.
+
+#### Verification Command
+
+```bash
+# -i <file> specifies the inventory file
+# -m ping uses the ping module
+ansible all -i inventory.ini -m ping
+```
+
+#### Successful Output Breakdown
+
+A successful connection proves:
+
+1.  **SSH is functional** (Security Group is open, public IP is correct).
+2.  **Key authentication succeeded** (path and permissions are correct).
+3.  **The remote user exists** (`ansible_user` is correct).
+4.  **Ansible can execute modules** (Python is present).
+
+<!-- end list -->
+
+```json
+ec2-web-01 | SUCCESS => {
+    "changed": false,
+    "ping": "pong" 
+}
+```
+
+
+### Ansible Inventory File Sample (`inventory.ini`)
+
+This sample assumes you have one Amazon Linux instance (`ec2-user`) and one Ubuntu instance (`ubuntu`), both reachable via their public IP addresses and using a single shared SSH key (`my-aws-key.pem`).
+
+```ini
+
+[all:vars]
+ansible_ssh_private_key_file=~/.ssh/my-aws-key.pem
+# The connection method is ssh by default, but it's good practice to specify.
+ansible_connection=ssh
+[webservers]
+# Host 1: Amazon Linux or RHEL/CentOS instance.
+# Hostname (alias)   ansible_host (Public IP)  ansible_user (default user)
+web_prod_01          ansible_host=54.123.45.67  ansible_user=ec2-user
+
+
+[databases]
+# Host 2: Ubuntu instance. Note the different 'ansible_user'.
+# Hostname (alias)   ansible_host (Public IP)  ansible_user (default user)
+db_staging_01        ansible_host=35.987.65.43  ansible_user=ubuntu
+
+
+[webservers:vars]
+# This variable only applies to hosts in the [webservers] group.
+http_port=80
+```
+
+### How to Use This Sample
+
+1.  **Save the file:** Save the content above as `inventory.ini` in your Ansible project directory.
+2.  **Update variables:** Critically, update the `ansible_ssh_private_key_file` path to point to your actual `.pem` file.
+3.  **Run commands:** Use the `-i` flag to reference the file:
+
+<!-- end list -->
+
+```bash
+# Test connectivity to the web server group
+ansible webservers -i inventory.ini -m ping
+
+# Install a package on the database server instance
+ansible db_staging_01 -i inventory.ini -m package -a "name=postgresql state=latest" --become
+```
